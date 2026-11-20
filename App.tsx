@@ -883,6 +883,12 @@ const snapNear = (raw: number, targets: number[], thr: number, step = 60) => {
   return Math.abs(best - raw) <= thr ? best : Math.round(raw / step) * step;};
 // A press that becomes a drag once the finger moves a few points, a hold if it stays down, or a tap if it's quick.
 let lastTouchEnd = 0; // when any press last ended, so a hold timer from an earlier press can never fire later
+// Web: when a finger lifts from an event (after a tap, hold or drag), the browser also sends a "click" to whatever is under it,
+// which by then can be a menu or sheet that just opened. That one click is swallowed so it can't close the menu or press a button.
+let swallowClickUntil = 0;
+if (IS_WEB && typeof document !== "undefined") {
+  document.addEventListener("click", (e) => { if (Date.now() < swallowClickUntil) { e.stopPropagation(); e.preventDefault(); swallowClickUntil = 0; } }, true);}
+const endTouch = () => { lastTouchEnd = Date.now(); if (IS_WEB) swallowClickUntil = Date.now() + 450; };
 function usePan(cbs: PanCallbacks) {
   const cb = useRef(cbs);
   cb.current = cbs;
@@ -921,12 +927,12 @@ function usePan(cbs: PanCallbacks) {
         clearTimeout(timer.current);
         cb.current.onMove(g.dx, g.dy);},
       onPanResponderRelease: () => {
-        lastTouchEnd = Date.now();
+        endTouch();
         stopHold();
         lift();
         if (moved.current) cb.current.onEnd();
         else if (!held.current) cb.current.onTap();},
-      onPanResponderTerminate: () => { lastTouchEnd = Date.now(); stopHold(); lift(); if (moved.current) cb.current.onEnd(); },})
+      onPanResponderTerminate: () => { endTouch(); stopHold(); lift(); if (moved.current) cb.current.onEnd(); },})
   ).current.panHandlers;}
 function DragBlock({ style, a11y, hitSlop, ink, children, ...cbs }: PanCallbacks & { style: any; a11y: string; hitSlop?: { top: number; bottom: number }; ink: string; children: React.ReactNode }) {
   const fx = useHoldFx(HOLD_MS, ink);
