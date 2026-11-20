@@ -1029,12 +1029,21 @@ const EventBlock = memo(function EventBlock({ ev, column, top, height, left, wid
       hitSlop={height < MINI ? { top: (MINI - height) / 2, bottom: (MINI - height) / 2 } : undefined} // short blocks stay easy to grab
       style={[styles.eventBlock, height < 40 && styles.eventBlockShort, height < MINI && { paddingVertical: 0 }, dragging && styles.eventDragging, { backgroundColor: ev.color }, edgeOn(ev.color, PANEL), ...place]}>
       {grip && (height >= MINI || dragging) && <ResizeGrip ink={inkOn(ev.color)} onTap={() => onEdit(ev)} onBegin={() => onDragBegin(ev, "resize", column)} onMove={onDragMove} onEnd={onDragEnd} onRelease={onTouchEnd} />}</DragBlock>);});
+// Where in the pressed element the finger was, from the top. The web's press events don't carry locationY, so it's worked out
+// from the element's position there.
+function pressY(e: any) {
+  let y = e?.nativeEvent?.locationY;
+  if (!Number.isFinite(y) && IS_WEB) {
+    const r = e?.currentTarget?.getBoundingClientRect?.(), ne = e?.nativeEvent ?? {};
+    const cy = ne.clientY ?? ne.changedTouches?.[0]?.clientY;
+    y = r && Number.isFinite(cy) ? cy - r.top : 0;}
+  return Number.isFinite(y) ? y : 0;}
 // The tappable hour rows with their lines. Memoized: they don't change while dragging.
 const HourRows = memo(function HourRows({ column, hourHeight, onAdd }: { column: number; hourHeight: number; onAdd: (hour: number, y: number) => void }) {
   return (<>
       {Array.from({ length: 12 }, (_, i) => {
         const hour = column * 12 + i;
-        return (<Pressable key={hour} onPress={(e) => onAdd(hour, e.nativeEvent.locationY)} accessibilityLabel={`Add event at ${formatTime(hour * 3600)}`} style={[styles.hourRow, { height: hourHeight }]}>
+        return (<Pressable key={hour} onPress={(e) => onAdd(hour, pressY(e))} accessibilityLabel={`Add event at ${formatTime(hour * 3600)}`} style={[styles.hourRow, { height: hourHeight }]}>
             <View style={{ width: LABEL_WIDTH }} />
             <View style={styles.hourLine} /></Pressable>);})}
     </>);});
