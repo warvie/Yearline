@@ -36,6 +36,18 @@
         "projectId": "014b720d-9401-49a8-b5ad-fcd66bce7f4a"
       }
     },
-    "owner": "vertexlazer"
+    "owner": "vertexlazer",
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "name": "Yearline",
+      "shortName": "Yearline",
+      "backgroundColor": "#111315",
+      "themeColor": "#000000",
+      "favicon": "./assets/favicon.png"
+    },
+    "experiments": {
+      "baseUrl": "/yearline-web"
+    }
   }
 }

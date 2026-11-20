@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, ScrollView, Keyboard, Pressable, StyleSheet, StatusBar,
-  Modal, TextInput, Platform, Alert, AppState, Switch, useWindowDimensions, Image, Linking, PanResponder, PixelRatio, Animated, Easing,
+  Modal, TextInput, Platform, Alert as NativeAlert, AppState, Switch, useWindowDimensions, Image, Linking, PanResponder, PixelRatio, Animated, Easing,
 } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Defs, Line, LinearGradient, Path, Rect, Stop } from "react-native-svg";
@@ -12,7 +12,21 @@ import * as DocumentPicker from "expo-document-picker";
 import { createAudioPlayer } from "expo-audio";
 import * as ImagePicker from "expo-image-picker";
 import { useVideoPlayer, VideoView } from "expo-video";
-import { Directory, File, Paths } from "expo-file-system";
+// expo-file-system has no web version, so it's only loaded on the phone.
+const IS_WEB = Platform.OS === "web";
+const FS: any = IS_WEB ? null : require("expo-file-system");
+// Pop-up menus. On the phone these are the system alerts; on the web (where those don't exist) AlertHost draws them.
+type AlertButton = { text?: string; style?: "default" | "cancel" | "destructive"; onPress?: () => void };
+type AlertRequest = { title: string; message?: string; buttons: AlertButton[] };
+let showWebAlert: ((r: AlertRequest) => void) | null = null;
+const Alert = {
+  alert(title: string, message?: string, buttons?: AlertButton[]) {
+    if (!IS_WEB) return NativeAlert.alert(title, message, buttons as any);
+    const list = buttons?.length ? buttons : [{ text: "OK" }];
+    if (showWebAlert) showWebAlert({ title, message, buttons: list });
+    else if (typeof window !== "undefined") window.alert([title, message].filter(Boolean).join("\n\n"));
+  },
+};
 const GAP = 8; // screen sides and gaps between sections
 const ISLAND_BOTTOM_OFFSET = 11; // island's bottom edge sits ~11pt above the safe-area inset
 const LINE_OFFSET = 11; // hour lines sit 5pt (row padding) + 6pt (line margin) below a row's top
@@ -63,7 +77,7 @@ function playSound(uri: string, toggle = false) {
   } catch { stopSound(); }
 }
 // Show reminders even while the app is open.
-Notifications.setNotificationHandler({
+if (!IS_WEB) Notifications.setNotificationHandler({
   handleNotification: async (n) => {
     const d = n.request.content.data ?? {};
     if (d.speak) Speech.speak(n.request.content.title ?? ""); // read the title aloud when the app is open
@@ -369,15 +383,29 @@ async function loadEvents(): Promise<CalEvent[]> {
   if (raw) return JSON.parse(raw).map(({ remind, ...e }: any) => (remind !== undefined && e.alert === undefined ? { ...e, alert: remind * 60 } : e));
   raw = await AsyncStorage.getItem(KEY_V2);
   return raw ? upgradeV2(JSON.parse(raw)) : [];}
+// Web reminders: timers that fire while the page is open.
+let webTimers: ReturnType<typeof setTimeout>[] = [];
+function clearWebTimers() { webTimers.forEach(clearTimeout); webTimers = []; }
+function fireWebReminder(ev: CalEvent, body: string) {
+  if (ev.sound === "speak") Speech.speak(ev.title);
+  else if (ev.sound === "custom" && ev.soundUri) playSound(ev.soundUri);
+  try {
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      const reg = (navigator as any).serviceWorker?.ready as Promise<any> | undefined;
+      if (reg) reg.then((r) => r.showNotification(ev.title, { body, tag: ev.id })).catch(() => new Notification(ev.title, { body }));
+      else new Notification(ev.title, { body });}
+  } catch {}
+  Alert.alert(ev.title, body);}
 let syncRun = 0; // lets a newer sync cancel an older one that is still scheduling
 // Replaces every scheduled notification with the upcoming ones for these events.
 async function syncReminders(events: CalEvent[]) {
   const run = ++syncRun;
   try {
-    if (!(await Notifications.getPermissionsAsync()).granted) return;
-    if (Platform.OS === "android") {
-      await Notifications.setNotificationChannelAsync("events", { name: "Events", importance: Notifications.AndroidImportance.HIGH });}
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    if (!IS_WEB) {
+      if (!(await Notifications.getPermissionsAsync()).granted) return;
+      if (Platform.OS === "android") {
+        await Notifications.setNotificationChannelAsync("events", { name: "Events", importance: Notifications.AndroidImportance.HIGH });}
+      await Notifications.cancelAllScheduledNotificationsAsync();}
     const stopped = new Set<string>(JSON.parse((await AsyncStorage.getItem(STOP_KEY)) ?? "[]"));
     const now = Date.now();
     const base = new Date();
@@ -403,12 +431,22 @@ async function syncReminders(events: CalEvent[]) {
           for (let c = 0; t <= limit && c < MAX_REPEATS; t += step, c++) if (t !== first) times.push(t);}
         for (const t of times) if (t > now) due.push({ at: t, ev, occ, startMs: at(ev.start) });}}
     due.sort((a, b) => a.at - b.at);
-    for (const { at, ev, occ, startMs } of due.slice(0, MAX_SCHEDULED)) {
-      if (run !== syncRun) return;
+    const bodyFor = (at: number, ev: CalEvent, startMs: number) => {
       const steps = ev.steps?.length ? ` · ${plural(ev.steps.length, "step")}` : "";
       const when = Math.abs(at - startMs) < 1000 ? "Starting now" : at < startMs ? `Starts at ${formatTime(ev.start)}` : `Started at ${formatTime(ev.start)}`;
+      return `${when}${steps}`;};
+    if (IS_WEB) { // a web app can't schedule notifications, so reminders fire while Yearline is open (or was just left)
+      clearWebTimers();
+      for (const { at, ev, startMs } of due) {
+        const wait = at - Date.now();
+        if (wait > 2 * 86400000) break;
+        webTimers.push(setTimeout(() => fireWebReminder(ev, bodyFor(at, ev, startMs)), Math.max(0, wait)));}
+      return;}
+    for (const { at, ev, occ, startMs } of due.slice(0, MAX_SCHEDULED)) {
+      if (run !== syncRun) return;
+      const body = bodyFor(at, ev, startMs);
       await Notifications.scheduleNotificationAsync({
-        content: { title: ev.title, body: `${when}${steps}`, sound: ev.sound === "silent" ? false : ev.sound === "custom" && ev.soundFile ? ev.soundFile : true, data: { occ, tap: !!ev.nag?.tap, speak: ev.sound === "speak", soundUri: ev.sound === "custom" ? ev.soundUri : undefined } },
+        content: { title: ev.title, body, sound: ev.sound === "silent" ? false : ev.sound === "custom" && ev.soundFile ? ev.soundFile : true, data: { occ, tap: !!ev.nag?.tap, speak: ev.sound === "speak", soundUri: ev.sound === "custom" ? ev.soundUri : undefined } },
         trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(at), channelId: "events" },});}
   } catch {
     // Reminders are best-effort; the calendar still works without them.
@@ -428,6 +466,19 @@ function Wheel({ values, index, onChange }: WheelProps) {
     const i = clamp(Math.round(y / ITEM_H), 0, values.length - 1);
     current.current = i;
     if (i !== index) onChange(i);};
+  // The web has no "scroll ended" events: settle a moment after scrolling stops, and snap onto the row.
+  const webTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => { if (IS_WEB) setTimeout(() => ref.current?.scrollTo({ y: index * ITEM_H, animated: false }), 0); return () => clearTimeout(webTimer.current); }, []);
+  const webScroll = IS_WEB ? {
+    scrollEventThrottle: 16,
+    onScroll: (e: any) => {
+      const y = e.nativeEvent.contentOffset.y;
+      clearTimeout(webTimer.current);
+      webTimer.current = setTimeout(() => {
+        const i = clamp(Math.round(y / ITEM_H), 0, values.length - 1);
+        if (Math.abs(y - i * ITEM_H) > 1) ref.current?.scrollTo({ y: i * ITEM_H, animated: true });
+        settle(y);}, 120);},
+  } : {};
   return (<ScrollView
       ref={ref}
       style={styles.wheel}
@@ -437,6 +488,7 @@ function Wheel({ values, index, onChange }: WheelProps) {
       contentOffset={{ x: 0, y: index * ITEM_H }}
       contentContainerStyle={{ paddingVertical: ITEM_H * 2 }}
       onScrollBeginDrag={Keyboard.dismiss}
+      {...webScroll}
       onMomentumScrollEnd={(e) => settle(e.nativeEvent.contentOffset.y)}
       // A slow release has no momentum phase, so settle here too.
       onScrollEndDrag={(e) => Math.abs(e.nativeEvent.velocity?.y ?? 0) < 0.05 && settle(e.nativeEvent.contentOffset.y)}>
@@ -666,29 +718,57 @@ const youtubeId = (url: string) => /(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*
 // Picked files live in a temporary cache, so copy them somewhere permanent (falls back to the original if that fails).
 async function keepFile(uri: string) {
   try {
-    const dir = new Directory(Paths.document, "media");
+    const dir = new FS.Directory(FS.Paths.document, "media");
     if (!dir.exists) dir.create();
-    const dest = new File(dir, `${newId()}${/\.\w+$/.exec(uri)?.[0] ?? ""}`);
-    new File(uri).copy(dest);
+    const dest = new FS.File(dir, `${newId()}${/\.\w+$/.exec(uri)?.[0] ?? ""}`);
+    new FS.File(uri).copy(dest);
     return dest.uri;
   } catch { return uri; }}
+// On the web, picked files only last until the page closes, so they're kept inside the saved data as text (data URLs).
+// Space there is small (a few MB in all), so photos are shrunk and big files are turned away.
+async function fileToDataUrl(uri: string, maxBytes: number): Promise<string | null> {
+  const blob = await (await fetch(uri)).blob();
+  if (blob.size > maxBytes) return null;
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(blob); });}
+async function shrinkImage(uri: string, max = 1080): Promise<string | null> {
+  try {
+    const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new (window as any).Image(); i.onload = () => res(i); i.onerror = rej; i.src = uri; });
+    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+    c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.72);
+  } catch { return null; }}
 // Copies a chosen audio file into the app. wav/aiff/caf copies also go in Library/Sounds, the one place iOS looks for notification sounds.
 async function pickSound() {
   const r = await DocumentPicker.getDocumentAsync({ type: "audio/*", copyToCacheDirectory: true });
   const a = r.canceled ? undefined : r.assets[0];
   if (!a) return undefined;
+  if (IS_WEB) {
+    const data = await fileToDataUrl(a.uri, 600_000).catch(() => null);
+    if (!data) { Alert.alert("Sound too big", "Pick a sound file under 600 KB."); return undefined; }
+    return { soundUri: data, soundName: a.name, soundFile: undefined };}
   const ext = (/\.(\w+)$/.exec(a.name)?.[1] ?? "caf").toLowerCase();
   const name = `${newId()}.${ext}`;
   let uri = a.uri, file: string | undefined;
-  try { const dir = new Directory(Paths.document, "sounds"); if (!dir.exists) dir.create(); const dest = new File(dir, name); new File(a.uri).copy(dest); uri = dest.uri; } catch {}
+  try { const dir = new FS.Directory(FS.Paths.document, "sounds"); if (!dir.exists) dir.create(); const dest = new FS.File(dir, name); new FS.File(a.uri).copy(dest); uri = dest.uri; } catch {}
   if (["wav", "aiff", "aif", "caf"].includes(ext)) {
-    try { const lib = new Directory(Paths.document.parentDirectory, "Library", "Sounds"); lib.create({ idempotent: true, intermediates: true }); new File(uri).copy(new File(lib, name)); file = name; } catch {}
+    try { const lib = new FS.Directory(FS.Paths.document.parentDirectory, "Library", "Sounds"); lib.create({ idempotent: true, intermediates: true }); new FS.File(uri).copy(new FS.File(lib, name)); file = name; } catch {}
   }
   return { soundUri: uri, soundName: a.name, soundFile: file };
 }
 async function pickMedia(): Promise<Media[]> {
   const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], allowsMultipleSelection: true, quality: 0.8 });
   if (r.canceled) return [];
+  if (IS_WEB) {
+    const kept: Media[] = [];
+    let skipped = 0;
+    for (const a of r.assets) {
+      const video = a.type === "video" || /^data:video|\.(mp4|mov|m4v|webm)$/i.test(a.uri);
+      const uri = video ? await fileToDataUrl(a.uri, 1_500_000).catch(() => null) : await shrinkImage(a.uri);
+      if (uri) kept.push({ id: newId(), kind: video ? "video" : "image", uri }); else skipped++;}
+    if (skipped) Alert.alert("Some files weren't added", "Videos over 1.5 MB don't fit in the web app's storage. Add a YouTube link instead.");
+    return kept;}
   return Promise.all(r.assets.map(async (a) => ({ id: newId(), kind: a.type === "video" ? "video" : "image", uri: await keepFile(a.uri) }) as Media));}
 function MediaThumb({ m, onPress, onRemove }: { m: Media; onPress: () => void; onRemove?: () => void }) {
   const yt = m.kind === "youtube" ? youtubeId(m.uri) : undefined;
@@ -1404,7 +1484,7 @@ function Root() {
   const deleteTheme = (id: string) => { storeCustoms(customs.filter((c) => c.id !== id)); if (prefs.theme === id) update({ theme: "midnight" }); };
   async function wipe(keys: string[], cancelReminders: boolean) {
     await AsyncStorage.multiRemove(keys).catch(() => {});
-    if (cancelReminders) await Notifications.cancelAllScheduledNotificationsAsync().catch(() => {});
+    if (cancelReminders) { if (IS_WEB) clearWebTimers(); else await Notifications.cancelAllScheduledNotificationsAsync().catch(() => {}); }
     setReload((n) => n + 1);}
   return (<View key={`${prefs.theme}:${reload}:${prefs.clock24}:${prefs.weekStart}`} style={styles.container}>
       <StatusBar barStyle={lum(BG) > 0.4 ? "dark-content" : "light-content"} backgroundColor={BG} />
@@ -1416,7 +1496,56 @@ function Root() {
       <View style={[styles.tabBar, { height: Math.max(insets.top - ISLAND_BOTTOM_OFFSET, 34) }]}>
         {TABS.map(([id, label]) => (<Pressable key={id} onPress={() => setTab(id)} accessibilityRole="tab" accessibilityState={{ selected: tab === id }} accessibilityLabel={label} style={styles.tabItem}>
             <TabIcon tab={id} color={tab === id ? ORANGE : MUTED} /></Pressable>))}</View>
-      <View pointerEvents="none" style={[styles.statusBackground, { height: insets.top - ISLAND_BOTTOM_OFFSET }]} /></View>);}
+      <View pointerEvents="none" style={[styles.statusBackground, { height: insets.top - ISLAND_BOTTOM_OFFSET }]} />
+      <AlertHost /></View>);}
+// Draws Alert.alert on the web: a small card with the buttons stacked.
+function AlertHost() {
+  const [req, setReq] = useState<AlertRequest | null>(null);
+  useEffect(() => { showWebAlert = setReq; return () => { if (showWebAlert === setReq) showWebAlert = null; }; }, []);
+  if (!IS_WEB) return null;
+  const cancel = req?.buttons.find((b) => b.style === "cancel");
+  const pick = (b?: AlertButton) => { setReq(null); b?.onPress?.(); };
+  return (<Modal visible={!!req} transparent animationType="fade" onRequestClose={() => pick(cancel)}>
+      <View style={styles.alertRoot}>
+        <Pressable style={styles.backdrop} onPress={() => pick(cancel)} accessibilityLabel="Close" />
+        <View style={styles.alertBox}>
+          <Text style={styles.alertTitle}>{req?.title}</Text>
+          {!!req?.message && <Text style={styles.alertMessage}>{req.message}</Text>}
+          {req?.buttons.map((b, i) => (<Pressable key={i} onPress={() => pick(b)} accessibilityRole="button" style={styles.alertButton}>
+              <Text style={[styles.alertButtonText, b.style === "destructive" && { color: DANGER }, b.style === "cancel" && { color: MUTED, fontWeight: "600" }]}>{b.text ?? "OK"}</Text></Pressable>))}</View></View></Modal>);}
+// Backups (web): everything Yearline saves, in one file you can keep in Files and restore later.
+async function exportBackup() {
+  try {
+    const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith("yearline:"));
+    const pairs = await AsyncStorage.multiGet(keys);
+    const json = JSON.stringify({ app: "yearline", version: 1, saved: new Date().toISOString(), data: Object.fromEntries(pairs) });
+    const name = `yearline-backup-${dayKey(new Date())}.json`;
+    const file = new (window as any).File([json], name, { type: "application/json" });
+    const nav = navigator as any;
+    if (nav.canShare?.({ files: [file] })) { await nav.share({ files: [file], title: "Yearline backup" }); return; }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(file); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e: any) { if (e?.name !== "AbortError") Alert.alert("Backup failed", String(e?.message ?? e)); }}
+function importBackup() {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = "application/json,.json";
+  input.onchange = async () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    try {
+      const parsed = JSON.parse(await f.text());
+      if (parsed?.app !== "yearline" || typeof parsed.data !== "object") throw new Error("This isn't a Yearline backup file.");
+      const entries = Object.entries(parsed.data as Record<string, string>).filter(([k, v]) => k.startsWith("yearline:") && typeof v === "string");
+      Alert.alert("Restore this backup?", `From ${new Date(parsed.saved).toLocaleString()}. It replaces all your current events, themes and settings.`, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Restore", style: "destructive", onPress: async () => {
+          const old = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith("yearline:"));
+          await AsyncStorage.multiRemove(old);
+          await AsyncStorage.multiSet(entries);
+          window.location.reload(); } },]);
+    } catch (e: any) { Alert.alert("Couldn't restore", String(e?.message ?? e)); }};
+  input.click();}
 function PageHeader({ title }: { title: string }) {
   const insets = useSafeAreaInsets();
   return <Text style={[styles.pageTitle, { marginTop: insets.top - ISLAND_BOTTOM_OFFSET + GAP }]}>{title}</Text>;}
@@ -1536,6 +1665,11 @@ function SettingsPage({ prefs, onChange, onWipe }: {
       <DurationSetting label="Default reminder" hint="How long before the start" value={prefs.alertSeconds} min={0} max={86400} onChange={(alertSeconds) => onChange({ alertSeconds })} />
       <Text style={styles.sectionLabel}>NOTIFICATIONS</Text>
       {toggle("reminders", "Reminders", "Turn off to silence every reminder. Events keep their reminder settings.")}
+      {IS_WEB && (<>
+          <Text style={styles.sectionLabel}>BACKUP</Text>
+          <Pressable style={styles.settingButton} onPress={exportBackup} accessibilityRole="button"><SettingHead label="Save a backup" hint="A file with all your events, themes and settings. Keep it in Files." /></Pressable>
+          <Pressable style={styles.settingButton} onPress={importBackup} accessibilityRole="button"><SettingHead label="Restore a backup" hint="Replaces everything with a backup file" /></Pressable>
+        </>)}
       <Text style={styles.sectionLabel}>DATA</Text>
       {reset("Reset saved colors", "Reset saved colors?", "Your custom colors are removed. Events that use them keep them.", "Reset", () => onWipe([COLORS_KEY], false))}
       {reset("Reset settings", "Reset settings?", "Every setting on this page goes back to its default. Your theme and events stay.", "Reset", () => onChange({ ...DEFAULT_PREFS, theme: prefs.theme }))}
@@ -1634,6 +1768,7 @@ function Calendar({ prefs }: { prefs: Prefs }) {
   }, []);
   // Tapping a repeating reminder stops the rest of its repeats.
   useEffect(() => {
+    if (IS_WEB) return;
     const sub = Notifications.addNotificationResponseReceivedListener(async (r) => {
       const { occ, tap, speak } = (r.notification.request.content.data ?? {}) as { occ?: string; tap?: boolean; speak?: boolean };
       if (speak) Speech.speak(r.notification.request.content.title ?? "");
@@ -1650,6 +1785,7 @@ function Calendar({ prefs }: { prefs: Prefs }) {
   useEffect(() => {
     if (!loaded) return;
     if (prefs.reminders) syncReminders(events);
+    else if (IS_WEB) clearWebTimers();
     else Notifications.cancelAllScheduledNotificationsAsync().catch(() => {});
   }, [events, loaded, todayKey, syncTick, prefs.reminders]);
   /* month grid: 6 weeks, plus markers for important events */
@@ -1884,7 +2020,10 @@ function Calendar({ prefs }: { prefs: Prefs }) {
       nag: draft.alert === undefined ? undefined : draft.nag,};
     // Ask for permission the first time a reminder is set, then rebuild the schedule.
     if (event.alert !== undefined) {
-      Notifications.requestPermissionsAsync().then(() => setSyncTick((t) => t + 1)).catch(() => {});}
+      if (IS_WEB) {
+        try { if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission().finally(() => setSyncTick((t) => t + 1)); } catch {}
+        setSyncTick((t) => t + 1);}
+      else Notifications.requestPermissionsAsync().then(() => setSyncTick((t) => t + 1)).catch(() => {});}
     if (draft.id) edit(draft.id, () => event);
     else setEvents((prev) => [...prev, event]);
     setDraft(null);}
@@ -2172,5 +2311,11 @@ return StyleSheet.create({
   fieldInput: { flex: 1, color: TEXT, fontSize: 15, fontWeight: "600", paddingVertical: 11 },
   buttonRow: { flexDirection: "row", gap: 8, marginTop: 4 },
   button: { flex: 1, minHeight: 48, justifyContent: "center", borderRadius: 10, borderWidth: 1.5, paddingVertical: 12, alignItems: "center" },
-  buttonText: { fontSize: 15 },});}
+  buttonText: { fontSize: 15 },
+  alertRoot: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  alertBox: { width: "100%", maxWidth: 320, backgroundColor: PANEL, borderRadius: 16, borderWidth: 1, borderColor: LINE, padding: 16, gap: 8 },
+  alertTitle: { color: TEXT, fontSize: 17, fontWeight: "700", textAlign: "center" },
+  alertMessage: { color: MUTED, fontSize: 14, textAlign: "center", marginBottom: 4 },
+  alertButton: { minHeight: 46, borderRadius: 10, backgroundColor: PANEL_LIGHT, alignItems: "center", justifyContent: "center", paddingHorizontal: 12 },
+  alertButtonText: { color: ORANGE, fontSize: 16, fontWeight: "700" },});}
 let styles = buildStyles();

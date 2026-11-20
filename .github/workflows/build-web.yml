@@ -1,0 +1,45 @@
+# Builds the web version of Yearline (an installable Home Screen app) and saves it to the "web-dist" branch.
+name: Build web app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["App.tsx", "app.json", "package.json", "scripts/**", ".github/workflows/build-web.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # The web needs these three; expo install picks the versions that match SDK 58.
+      - run: npx expo install react-dom react-native-web @expo/metro-runtime
+
+      - run: npx expo export --platform web --clear
+
+      - name: Icons
+        run: |
+          for s in 180 192 512; do
+            convert assets/icon.png -resize ${s}x${s} dist/icon-$s.png || cp assets/icon.png dist/icon-$s.png
+          done
+
+      - run: node scripts/pwa.mjs dist
+
+      - name: Save to the web-dist branch
+        run: |
+          cd dist
+          git init -q -b web-dist
+          git add -A
+          git -c user.name=github-actions -c user.email=actions@github.com commit -q -m "Yearline web build from run ${{ github.run_number }}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" web-dist
