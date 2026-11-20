@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const dist = process.argv[2] ?? "dist";
-const base = "/yearline-web";
+const base = "/Yearline";
 const build = new Date().toISOString();
 
 let html = readFileSync(join(dist, "index.html"), "utf8");

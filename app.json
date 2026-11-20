@@ -47,7 +47,7 @@
       "favicon": "./assets/favicon.png"
     },
     "experiments": {
-      "baseUrl": "/yearline-web"
+      "baseUrl": "/Yearline"
     }
   }
 }
