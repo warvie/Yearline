@@ -5,6 +5,9 @@ name: Build iPhone app
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   ios:
     runs-on: macos-latest
@@ -48,3 +51,13 @@ jobs:
         with:
           name: Yearline-ipa
           path: Yearline.ipa
+
+      # Also keep the newest .ipa on the "ipa" branch, so it can be fetched with git.
+      - name: Save .ipa to the ipa branch
+        run: |
+          mkdir out && cp Yearline.ipa out/ && cd out
+          git init -q -b ipa
+          git -c user.name=github-actions -c user.email=actions@github.com commit -q --allow-empty -m "Yearline.ipa from run ${{ github.run_number }}"
+          git add Yearline.ipa
+          git -c user.name=github-actions -c user.email=actions@github.com commit -q --amend -m "Yearline.ipa from run ${{ github.run_number }}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ipa
