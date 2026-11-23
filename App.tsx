@@ -998,6 +998,11 @@ function DragBlock({ style, a11y, hitSlop, ink, children, ...cbs }: PanCallbacks
 // The grip along the bottom edge of an event: drag it to change when the event ends.
 function ResizeGrip({ ink, ...cbs }: PanCallbacks & { ink: string }) {
   return <View {...usePan(cbs)} accessibilityLabel="Drag to change the end time" style={styles.grip}><View style={[styles.gripBar, { backgroundColor: ink }]} /></View>;}
+// The grip of a block too short to hold one: a small tab in the event's color hanging from the block's bottom edge, outside it,
+// so it's never cut off. Its touch area reaches a little past the tab so it's easy to catch.
+function TabGrip({ color, ink, ...cbs }: PanCallbacks & { color: string; ink: string }) {
+  return (<View {...usePan(cbs)} accessibilityLabel="Drag to change the end time" hitSlop={{ top: 4, bottom: 8, left: 10, right: 10 }} style={styles.tabGrip}>
+      <View style={[styles.tabGripPill, { backgroundColor: color }, edgeOn(color, PANEL)]}><View style={[styles.tabGripBar, { backgroundColor: ink }]} /></View></View>);}
 // Lets a color picker stop the scroll area it sits in from scrolling while a finger is on it, so dragging down picks a color.
 const ScrollLock = React.createContext<(locked: boolean) => void>(() => {});
 function LockScroll({ scrollEnabled = true, ...props }: React.ComponentProps<typeof ScrollView>) {
@@ -1112,7 +1117,10 @@ const EventBlock = memo(function EventBlock({ ev, column, top, height, left, wid
   onDragBegin: (ev: CalEvent, mode: "move" | "resize", column: number) => void; onDragMove: (dx: number, dy: number) => void; onDragEnd: () => void; onTouchEnd: () => void;
 }) {
   const place = [shift !== null && { transform: [{ translateX: shift }] }, { top, height, left, width }];
-  return (<DragBlock
+  const small = height < MINI; // too short for the grip inside: it hangs below as a tab instead
+  const gripCbs = { onTap: () => onEdit(ev), onBegin: () => onDragBegin(ev, "resize", column), onMove: onDragMove, onEnd: onDragEnd, onRelease: onTouchEnd };
+  return (<>
+    <DragBlock
       onTap={() => onEdit(ev)}
       onHold={() => onHold(ev)}
       onBegin={() => onDragBegin(ev, "move", column)}
@@ -1123,7 +1131,10 @@ const EventBlock = memo(function EventBlock({ ev, column, top, height, left, wid
       ink={inkOn(ev.color)}
       hitSlop={height < MINI ? { top: (MINI - height) / 2, bottom: (MINI - height) / 2 } : undefined} // short blocks stay easy to grab
       style={[styles.eventBlock, height < 40 && styles.eventBlockShort, height < MINI && { paddingVertical: 0 }, dragging && styles.eventDragging, { backgroundColor: ev.color }, edgeOn(ev.color, PANEL), ...place]}>
-      {grip && (height >= MINI || dragging) && <ResizeGrip ink={inkOn(ev.color)} onTap={() => onEdit(ev)} onBegin={() => onDragBegin(ev, "resize", column)} onMove={onDragMove} onEnd={onDragEnd} onRelease={onTouchEnd} />}</DragBlock>);});
+      {grip && !small && <ResizeGrip ink={inkOn(ev.color)} {...gripCbs} />}</DragBlock>
+    {grip && small && (<View pointerEvents="box-none" style={[styles.tabGripWrap, { top: top + height, left, width }, shift !== null && { transform: [{ translateX: shift }] }, dragging && { zIndex: 21 }]}>
+        <TabGrip color={ev.color} ink={inkOn(ev.color)} {...gripCbs} /></View>)}
+  </>);});
 // Where in the pressed element the finger was, from the top. The web's press events don't carry locationY, so it's worked out
 // from the element's position there.
 function pressY(e: any) {
@@ -2326,6 +2337,10 @@ return StyleSheet.create({
   eventDragging: { zIndex: 20, opacity: 0.92, shadowColor: "#000000", shadowOpacity: 0.5, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 8 },
   grip: { position: "absolute", left: 0, right: 0, bottom: 0, height: 12, ...centered },
   gripBar: { width: 22, height: 3, borderRadius: 2, opacity: 0.45 },
+  tabGripWrap: { position: "absolute", height: 10, alignItems: "center", zIndex: 6 },
+  tabGrip: { width: 30, height: 10, alignItems: "center" },
+  tabGripPill: { width: 24, height: 8, borderBottomLeftRadius: 5, borderBottomRightRadius: 5, alignItems: "center", justifyContent: "center", marginTop: -1 },
+  tabGripBar: { width: 12, height: 2, borderRadius: 1, opacity: 0.55 },
   eventBlockShort: { paddingVertical: 2, alignItems: "center" },
   eventGhost: { position: "absolute", borderRadius: 6, overflow: "hidden" },
   eventInner: { ...StyleSheet.absoluteFillObject, flexDirection: "row", alignItems: "flex-start", paddingHorizontal: 5, paddingVertical: 3 },
