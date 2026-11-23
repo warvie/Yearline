@@ -1117,7 +1117,11 @@ const EventBlock = memo(function EventBlock({ ev, column, top, height, left, wid
   onDragBegin: (ev: CalEvent, mode: "move" | "resize", column: number) => void; onDragMove: (dx: number, dy: number) => void; onDragEnd: () => void; onTouchEnd: () => void;
 }) {
   const place = [shift !== null && { transform: [{ translateX: shift }] }, { top, height, left, width }];
-  const small = height < MINI; // too short for the grip inside: it hangs below as a tab instead
+  // Too short for the grip inside: it hangs below as a tab instead. Whichever grip a drag starts on stays until the finger
+  // lifts (swapping it mid-drag would end the drag), even when the event grows or shrinks past that size.
+  const smallAtStart = useRef(height < MINI);
+  if (!dragging) smallAtStart.current = height < MINI;
+  const small = smallAtStart.current;
   const gripCbs = { onTap: () => onEdit(ev), onBegin: () => onDragBegin(ev, "resize", column), onMove: onDragMove, onEnd: onDragEnd, onRelease: onTouchEnd };
   return (<>
     <DragBlock
