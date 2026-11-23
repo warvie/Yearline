@@ -186,10 +186,11 @@ type Prefs = {
   theme: string; showTimes: boolean; showInfo: boolean; defaultReminder: boolean;
   clock24: boolean; weekStart: number; showNow: boolean; showDots: boolean; showWeekday: boolean; reminders: boolean;
   defaultLength: number; alertSeconds: number; // seconds
+  push: boolean; ntfyTopic: string; // web: phone notifications through the ntfy app, and the private topic they're sent to
 };
 const DEFAULT_PREFS: Prefs = {
   theme: "midnight", showTimes: true, showInfo: true, defaultReminder: true,
-  clock24: false, weekStart: 0, showNow: true, showDots: true, showWeekday: true, reminders: true, defaultLength: 3600, alertSeconds: 600,};
+  clock24: false, weekStart: 0, showNow: true, showDots: true, showWeekday: true, reminders: true, defaultLength: 3600, alertSeconds: 600, push: false, ntfyTopic: "",};
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
@@ -396,6 +397,54 @@ function fireWebReminder(ev: CalEvent, body: string) {
       else new Notification(ev.title, { body });}
   } catch {}
   Alert.alert(ev.title, body);}
+// ---- Phone notifications on the web, through ntfy (ntfy.sh, a free notification server, and its iPhone app) ----
+// Each reminder is sent ahead of time with its delivery time; ntfy.sh holds it (up to 3 days) and pushes it to the ntfy app.
+// Every reminder has a fixed id (event + time), so a changed reminder replaces its old copy and a removed one is cancelled.
+// Requests use simple GETs and POSTs with the options in the URL, so the browser sends them without any cross-site checks.
+let NTFY = { enabled: false, topic: "" };
+const NTFY_SERVER = "https://ntfy.sh";
+const NTFY_SENT_KEY = "yearline:ntfy-sent:v1"; // what's been handed to ntfy and not delivered yet: id -> { at, sig, topic }
+const NTFY_AHEAD = 3 * 86400000 - 5 * 60000; // ntfy.sh holds messages for at most 3 days
+const NTFY_MAX = 80; // most reminders waiting at ntfy at once
+const appUrl = () => (typeof location !== "undefined" ? location.origin + location.pathname : "");
+const newTopic = () => {
+  const abc = "abcdefghijkmnopqrstuvwxyz23456789", bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  return `yearline-${Array.from(bytes, (b) => abc[b % abc.length]).join("")}`;};
+const ntfyPost = (topic: string, path: string, params: Record<string, string>, body: string) =>
+  fetch(`${NTFY_SERVER}/${topic}${path}?${new URLSearchParams(params)}`, { method: "POST", mode: "no-cors", body });
+async function sendTestNotification(topic: string) {
+  await ntfyPost(topic, "", { title: "Yearline", tags: "white_check_mark", click: appUrl() }, "Notifications are working. Reminders will arrive here even when Yearline is closed.");}
+let ntfyQueue: Promise<void> = Promise.resolve();
+function syncNtfy(items: { at: number; ev: CalEvent; body: string }[]) {
+  ntfyQueue = ntfyQueue.then(() => syncNtfyNow(items)).catch(() => {});
+  return ntfyQueue;}
+async function syncNtfyNow(items: { at: number; ev: CalEvent; body: string }[]) {
+  const topic = NTFY.enabled ? NTFY.topic : "";
+  const sent: Record<string, { at: number; sig: string; topic: string }> = JSON.parse((await AsyncStorage.getItem(NTFY_SENT_KEY)) ?? "{}");
+  const save = () => AsyncStorage.setItem(NTFY_SENT_KEY, JSON.stringify(sent));
+  const now = Date.now();
+  const want = new Map<string, { at: number; title: string; body: string; sig: string }>();
+  if (topic) for (const it of items) {
+    if (it.at < now + 20000 || it.at > now + NTFY_AHEAD) continue;
+    if (want.size >= NTFY_MAX) break;
+    const id = `${it.ev.id}-${Math.round(it.at / 1000)}`.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60);
+    want.set(id, { at: it.at, title: it.ev.title, body: it.body, sig: `${it.ev.title}|${it.body}|${it.ev.alert}` });}
+  let changed = false;
+  for (const [id, s] of Object.entries(sent)) { // delivered already, or not wanted any more: forget / cancel
+    if (s.at <= now) { delete sent[id]; changed = true; continue; }
+    if (s.topic !== topic || !want.has(id)) {
+      try { await fetch(`${NTFY_SERVER}/${s.topic}/${id}/delete`, { mode: "no-cors" }); delete sent[id]; changed = true; } catch {}}}
+  for (const [id, w] of want) {
+    const s = sent[id];
+    if (s && s.sig === w.sig && s.topic === topic) continue;
+    try {
+      await ntfyPost(topic, `/${id}`, { title: w.title, delay: String(Math.round(w.at / 1000)), priority: "high", tags: "calendar", click: appUrl() }, w.body);
+      sent[id] = { at: w.at, sig: w.sig, topic };
+      await save(); changed = false;
+    } catch { break; } // offline: try again next time
+  }
+  if (changed) await save();}
 let syncRun = 0; // lets a newer sync cancel an older one that is still scheduling
 // Replaces every scheduled notification with the upcoming ones for these events.
 async function syncReminders(events: CalEvent[]) {
@@ -435,12 +484,16 @@ async function syncReminders(events: CalEvent[]) {
       const steps = ev.steps?.length ? ` · ${plural(ev.steps.length, "step")}` : "";
       const when = Math.abs(at - startMs) < 1000 ? "Starting now" : at < startMs ? `Starts at ${formatTime(ev.start)}` : `Started at ${formatTime(ev.start)}`;
       return `${when}${steps}`;};
-    if (IS_WEB) { // a web app can't schedule notifications, so reminders fire while Yearline is open (or was just left)
+    if (IS_WEB) {
+      // A web app can't schedule notifications itself. With phone notifications on, the ntfy server holds them and sends them
+      // at the right time; otherwise reminders only pop up while Yearline is open.
       clearWebTimers();
-      for (const { at, ev, startMs } of due) {
+      const push = NTFY.enabled && !!NTFY.topic;
+      if (!push) for (const { at, ev, startMs } of due) {
         const wait = at - Date.now();
         if (wait > 2 * 86400000) break;
         webTimers.push(setTimeout(() => fireWebReminder(ev, bodyFor(at, ev, startMs)), Math.max(0, wait)));}
+      if (run === syncRun) await syncNtfy(push ? due.map(({ at, ev, startMs }) => ({ at, ev, body: bodyFor(at, ev, startMs) })) : []);
       return;}
     for (const { at, ev, occ, startMs } of due.slice(0, MAX_SCHEDULED)) {
       if (run !== syncRun) return;
@@ -1522,6 +1575,7 @@ function Root() {
   CLOCK24 = prefs.clock24;
   WEEK_START = prefs.weekStart;
   DEFAULT_ALERT = prefs.alertSeconds;
+  NTFY = { enabled: prefs.push, topic: prefs.ntfyTopic };
   if (THEME.id !== prefs.theme || !BG) applyTheme(prefs.theme); // before anything renders
   const update = (patch: Partial<Prefs>) => {
     const next = { ...prefs, ...patch };
@@ -1662,6 +1716,32 @@ function ThemeEditor({ initial, onSave, onDelete, onClose }: { initial: Theme | 
         <View style={[styles.buttonRow, { paddingHorizontal: GAP * 2 }]}>
           {onDelete ? <Btn kind="delete" label="Delete" onPress={onDelete} /> : <Btn kind="cancel" label="Cancel" onPress={onClose} />}
           <Btn kind="save" label="Save" onPress={() => onSave(t)} /></View></View></Modal>);}
+// Web: phone notifications through the ntfy app. Turning it on makes a private topic; the steps say how to follow it in ntfy.
+function PhoneNotifications({ prefs, onChange }: { prefs: Prefs; onChange: (p: Partial<Prefs>) => void }) {
+  const [copied, setCopied] = useState(false);
+  const [tested, setTested] = useState(false);
+  const topic = prefs.ntfyTopic;
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(topic); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    catch { Alert.alert("Your topic", topic); }};
+  const test = async () => {
+    try { await sendTestNotification(topic); setTested(true); setTimeout(() => setTested(false), 3000); }
+    catch { Alert.alert("Couldn't send", "Check that you're online and try again."); }};
+  return (<>
+      <SettingRow label="Phone notifications" hint="Get reminders even when Yearline is closed, through the free ntfy app" value={prefs.push}
+        onChange={(push) => onChange(push && !topic ? { push, ntfyTopic: newTopic() } : { push })} />
+      {prefs.push && !!topic && (<View style={styles.settingBox}>
+          <SettingHead label="Set up ntfy (once)" />
+          <Text style={styles.settingHint}>1. Install <Text style={{ fontWeight: "700", color: TEXT }}>ntfy</Text> from the App Store, open it and allow notifications.</Text>
+          <Text style={styles.settingHint}>2. Tap <Text style={{ fontWeight: "700", color: TEXT }}>+</Text>, paste this topic and tap Subscribe. Keep it private: anyone with it can see your reminders.</Text>
+          <Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="Copy topic" style={styles.topicBox}>
+            <Text style={styles.topicText} numberOfLines={1} selectable>{topic}</Text>
+            <Text style={styles.topicCopy}>{copied ? "Copied ✓" : "Copy"}</Text></Pressable>
+          <Text style={styles.settingHint}>3. Send a test. It should arrive in a few seconds.</Text>
+          <Btn kind="cancel" label={tested ? "Sent ✓" : "Send a test notification"} onPress={test} />
+          <Text style={styles.settingHint}>ntfy keeps reminders up to 3 days ahead, so open Yearline at least every couple of days. Reminders show your event titles to ntfy.sh's server.</Text>
+        </View>)}
+    </>);}
 // A setting's name with its hint underneath.
 const SettingHead = ({ label, hint, flex }: { label: string; hint?: string; flex?: boolean }) => (<View style={flex && { flex: 1 }}>
     <Text style={styles.settingLabel}>{label}</Text>
@@ -1720,6 +1800,7 @@ function SettingsPage({ prefs, onChange, onWipe }: {
       <DurationSetting label="Default reminder" hint="How long before the start" value={prefs.alertSeconds} min={0} max={86400} onChange={(alertSeconds) => onChange({ alertSeconds })} />
       <Text style={styles.sectionLabel}>NOTIFICATIONS</Text>
       {toggle("reminders", "Reminders", "Turn off to silence every reminder. Events keep their reminder settings.")}
+      {IS_WEB && <PhoneNotifications prefs={prefs} onChange={onChange} />}
       {IS_WEB && (<>
           <Text style={styles.sectionLabel}>BACKUP</Text>
           <Pressable style={styles.settingButton} onPress={exportBackup} accessibilityRole="button"><SettingHead label="Save a backup" hint="A file with all your events, themes and settings. Keep it in Files." /></Pressable>
@@ -1840,9 +1921,9 @@ function Calendar({ prefs }: { prefs: Prefs }) {
   useEffect(() => {
     if (!loaded) return;
     if (prefs.reminders) syncReminders(events);
-    else if (IS_WEB) clearWebTimers();
+    else if (IS_WEB) { clearWebTimers(); syncNtfy([]); }
     else Notifications.cancelAllScheduledNotificationsAsync().catch(() => {});
-  }, [events, loaded, todayKey, syncTick, prefs.reminders]);
+  }, [events, loaded, todayKey, syncTick, prefs.reminders, prefs.push, prefs.ntfyTopic]);
   /* month grid: 6 weeks, plus markers for important events */
   const days = useMemo(() => {
     const first = (new Date(year, month, 1).getDay() - WEEK_START + 7) % 7;
@@ -2367,6 +2448,9 @@ return StyleSheet.create({
   buttonRow: { flexDirection: "row", gap: 8, marginTop: 4 },
   button: { flex: 1, minHeight: 48, justifyContent: "center", borderRadius: 10, borderWidth: 1.5, paddingVertical: 12, alignItems: "center" },
   buttonText: { fontSize: 15 },
+  topicBox: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: PANEL_LIGHT, borderRadius: 10, borderWidth: 1, borderColor: LINE, paddingHorizontal: 12, paddingVertical: 12 },
+  topicText: { flex: 1, minWidth: 0, color: TEXT, fontSize: 14, fontWeight: "600" },
+  topicCopy: { color: ORANGE, fontSize: 14, fontWeight: "700" },
   alertRoot: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   alertBox: { width: "100%", maxWidth: 320, backgroundColor: PANEL, borderRadius: 16, borderWidth: 1, borderColor: LINE, padding: 16, gap: 8 },
   alertTitle: { color: TEXT, fontSize: 17, fontWeight: "700", textAlign: "center" },
