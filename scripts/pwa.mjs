@@ -21,7 +21,27 @@ const head = `
     <style>
       html, body { background: #000; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
       input, textarea { -webkit-user-select: text; user-select: text; }
-    </style>`;
+      /* Fill the whole screen. --app-h is the real screen height (set below) in the Home Screen app, where iOS reports less. */
+      html, body { height: var(--app-h, 100%) !important; overflow: hidden; }
+      body { position: fixed; top: 0; left: 0; right: 0; }
+      #root { height: var(--app-h, 100%) !important; }
+    </style>
+    <script>
+      // Opened from the Home Screen with the status bar drawn over the page, iOS gives the page a height short by about the
+      // status bar, which leaves a gap at the bottom. The app covers the whole screen there, so the screen's own height is right.
+      (function () {
+        var standalone = navigator.standalone || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+        if (!standalone) return;
+        function fit() {
+          var portrait = !window.matchMedia || matchMedia("(orientation: portrait)").matches;
+          var full = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width);
+          document.documentElement.style.setProperty("--app-h", Math.max(full, window.innerHeight) + "px");
+        }
+        fit();
+        addEventListener("resize", fit);
+        addEventListener("orientationchange", function () { setTimeout(fit, 300); });
+      })();
+    </script>`;
 html = html.replace("</head>", `${head}\n  </head>`);
 const sw = `
     <script>
