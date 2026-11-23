@@ -1080,6 +1080,10 @@ const EventLabel = memo(function EventLabel({ ev, selKey, top, height, left, wid
   const times = [startText, endText].filter(Boolean).join(" – ");
   const inset = [tight && styles.eventInnerShort, { paddingLeft: !tight && times ? timeW : 5 }];
   const place = [raised && { zIndex: 20 }, shift !== null && { transform: [{ translateX: shift }] }];
+  if (tagW > 0) // the title is shown in a tag (see Column)
+    return (<View pointerEvents="none" style={[styles.eventGhost, styles.sliverGhost, ...place, { top: tagY, height: TAG_H, left: tagX, width: tagW }]}>
+        <View style={[styles.sliverTag, { backgroundColor: ev.color }, edgeOn(ev.color, PANEL)]}>
+          <Text style={[styles.miniText, { color }]} numberOfLines={1}>{text}</Text></View></View>);
   if (narrowMode === "upright") { // the label runs up the bar, where there's room for it
     const len = height - 6, thick = narrowW - 2;
     return (<View pointerEvents="none" style={[styles.eventGhost, ...place, { top, height, left, width }]}>
@@ -1207,9 +1211,10 @@ const Column = memo(function Column({ column, areaW, onMore, selKey, hourHeight,
     if (g.height < SLIVER) { tagged.add(g.ev.id); continue; }
     if (w < NARROW && g.height >= MINI) { // thin side-by-side block: wrap a small label if it fits, else run it up the bar
       const lines = wrapLines(g.height), wrap = g.labels.find((x) => Math.ceil(textW(x, 8) / (w - 6)) <= lines);
-      const upright = !wrap && g.height > w;
+      const upright = !wrap && g.height > w && textW(g.labels[g.labels.length - 1], 9) <= g.height - 6;
+      if (!wrap && !upright) { tagged.add(g.ev.id); continue; } // the title doesn't fit in the bar at all: it gets a tag
       narrow.set(g.ev.id, { mode: upright ? "upright" : "wrap", w });
-      picked.set(g.ev.id, wrap ?? (upright ? fits(g.labels, g.height - 6, 9) : g.labels[g.labels.length - 1]));
+      picked.set(g.ev.id, wrap ?? fits(g.labels, g.height - 6, 9));
       taken.push({ t: g.top, b, l: g.l, r: g.r });
     } else if (g.height < MINI) { // one line, right-aligned; if even the shortest label won't fit inside, it gets a tag instead
       const label = fits(g.labels, w - 10, 8);
@@ -1222,6 +1227,11 @@ const Column = memo(function Column({ column, areaW, onMore, selKey, hourHeight,
       const end = showTimes && endAt === g.segEnd && (g.segEnd % 3600 !== 0 || g.segEnd === g.ce) ? shortTime(endAt) : "";
       const timeW = start || end ? Math.max(start.length, end.length) * 5 + 10 : 0;
       const info = showInfo ? blockInfo(g.ev, selKey) : null, details = [info?.reminder, info?.sequence].filter(Boolean) as string[];
+      // The title must be readable in the block: on one line (shrunk as far as 60%) in a short block, on two lines in a tall one
+      // (one when details share it). If it can't be, the title goes in a tag instead.
+      const titleText = `${g.ev.important ? "★ " : ""}${g.ev.title}${g.ev.repeat !== "none" ? " ↻" : ""}`;
+      const roomW = w - (start || end ? timeW : 5) - 5, titleLines = tight ? 1 : details.length ? 1 : 2;
+      if (textW(titleText, tight ? 9 * 0.6 : 10) > roomW * titleLines * (titleLines > 1 ? 0.85 : 1)) { tagged.add(g.ev.id); continue; }
       const bodyH = tight ? 11 + (details.length ? 9 : 0) : details.length ? 13 + (g.height >= 58 ? details.length : 1) * 11 : 26;
       const span = Math.max(textW(`${g.ev.important ? "★ " : ""}${g.ev.title} ↻`, tight ? 9 : 10), ...details.map((d) => textW(d, 9)));
       taken.push({ t: cy - bodyH / 2, b: cy + bodyH / 2, l: Math.max(g.l + timeW, g.r - 5 - span), r: g.r - 5 });
@@ -1234,64 +1244,44 @@ const Column = memo(function Column({ column, areaW, onMore, selKey, hourHeight,
     if (b <= a) return [];
     const top = ((a - colStart) / 3600) * hourHeight + LINE_OFFSET, height = ((b - a) / 3600) * hourHeight;
     const l = (m.lane / m.lanes) * areaW, r = ((m.lane + 1) / m.lanes) * areaW;
-    taken.push({ t: top, b: top + height, l, r });
     return [{ ...m, top, height, l, r }];});
-  // Then the tags, top to bottom, by fixed rules, so nothing overlaps and every tag stays level with its bar:
-  //   1. a tag sits at the right end of its lane, unless the tag just above would touch it: then at the left end (they zigzag).
-  //      Bars snap to a grid at least half a tag tall, so a tag can only ever meet the tag right above or below it, never two
-  //      rows away: two sides are always enough.
-  //   2. two tags sharing a row share its width: both step down together (the time goes first, then the marks) until they fit.
-  //   3. if even their titles can't both fit, the later one folds into the earlier, which reads "Meds +1" and lists them when
-  //      tapped. (So is a tag that would meet tags on both sides.) A readable title and a count beat two titles cut in half.
-  //   4. other events' text in the row is stepped around the same way; with no tag to fold into, a tag left with too little
-  //      room shows the most of its title that fits, or nothing if that's under 24pt (its bar can still be tapped).
-  const tags = new Map<string, { x: number; y: number; w: number }>();
-  const groups = new Map<string, CalEvent[]>(); // a tag's event id -> the events folded into it (that one first)
-  const tagRects = new Map<string, (typeof taken)[number] & { side: "l" | "r" }>(); // each tag's entry in `taken`, and its side
-  const geoOf = new Map(geo.map((g) => [g.ev.id, g]));
-  const setTag = (id: string, label: string, t: number, l: number, w: number, side: "l" | "r") => {
-    const rect = tagRects.get(id) ?? { t, b: t + TAG_H, l: 0, r: 0, side };
-    if (!tagRects.has(id)) { tagRects.set(id, rect); taken.push(rect); }
-    Object.assign(rect, { l, r: l + w, side });
-    picked.set(id, label);
-    tags.set(id, { x: l, y: t, w });};
-  // The room a tag has on one side of [lo, hi] at row t: from that edge to the nearest thing in the way (3pt clear), ignoring `skip`.
-  const roomAt = (t: number, lo: number, hi: number, side: "l" | "r", skip?: object) => {
-    let a = lo, b = hi;
-    for (const o of taken) if (o !== skip && o.t < t + TAG_H && o.b > t && o.r > lo && o.l < hi) {
-      if (side === "r") a = Math.max(a, o.r + 3); else b = Math.min(b, o.l - 3);}
-    return { a, b };};
-  const longest = (labels: string[], room: number) => labels.find((x) => tagWidth(x) <= room);
-  for (const g of geo.filter((x) => tagged.has(x.ev.id)).sort((x, y) => x.top + x.height / 2 - (y.top + y.height / 2))) {
-    const t = g.top + g.height / 2 - TAG_H / 2;
-    const near = [...tagRects].filter(([, o]) => o.t < t + TAG_H && o.b > t && o.l < g.r && o.r > g.l);
-    const sides = new Set(near.map(([, o]) => o.side));
-    if (sides.size < 2) {
-      const side = sides.has("r") ? "l" : "r";
-      let { a, b } = roomAt(t, g.l, g.r, side);
-      let label = longest(g.labels, b - a);
-      if (!label && near.length) { // share the row: shorten the neighbor as little as possible so this one fits
-        const [nid, rect] = near[0], n = geoOf.get(nid)!;
-        // Both step down together (time, then marks), so neither keeps more than the other while the other loses its title.
-        const pairs = g.labels.flatMap((_, i) => n.labels.map((_, j) => [i, j])).sort((p, q) => Math.max(...p) - Math.max(...q) || p[0] + p[1] - q[0] - q[1]);
-        for (const [i, j] of pairs) {
-          const tw = tagWidth(n.labels[j]), nl = rect.side === "r" ? rect.r - tw : rect.l;
-          const room = side === "l" ? nl - 3 - a : b - (nl + tw + 3);
-          if (tagWidth(g.labels[i]) <= room) { setTag(nid, n.labels[j], rect.t, nl, tw, rect.side); label = g.labels[i]; break; }}
-        ({ a, b } = roomAt(t, g.l, g.r, side));}
-      const room = b - a;
-      if (!label && !near.length && room >= 24) label = g.labels[g.labels.length - 1]; // only text in the way: cut to the room there is
-      if (label) { const w = Math.min(tagWidth(label), room); setTag(g.ev.id, label, t, side === "r" ? b - w : a, w, side); continue; }
-      if (!near.length) continue;}
-    // Fold into the nearer tag in the way, which keeps as much of its label as fits beside the count.
-    const [hid, rect] = near.sort(([, p], [, q]) => Math.abs(p.t - t) - Math.abs(q.t - t))[0], h = geoOf.get(hid)!;
-    const group = groups.get(hid) ?? [h.ev];
-    group.push(g.ev);
-    groups.set(hid, group);
-    const { a, b } = roomAt(rect.t, h.l, h.r, rect.side, rect);
-    const label = [...h.labels.map((x) => `${x} +${group.length - 1}`), `+${group.length}`].find((x) => tagWidth(x) <= b - a) ?? `+${group.length}`;
-    const w = Math.min(tagWidth(label), b - a);
-    setTag(hid, label, rect.t, rect.side === "r" ? b - w : a, w, rect.side);}
+  // Then the tags. Every event whose title isn't readable in its block gets one, so every event's title is always on screen:
+  // thin bars, short or narrow blocks that can't hold their title, and events folded into a "+N" block. Each tag shows the
+  // longest label that fits the column (time and marks first go, then the title is cut only if wider than the whole column).
+  // Top to bottom, a tag sits level with its bar at the right end of its lane, or the left end. When something is in the way
+  // (another tag, or text in a block) it slides down, or up, to the nearest free spot, so tags never cover each other.
+  const folded: { ev: CalEvent; top: number; height: number; l: number; r: number; labels: string[] }[] = [];
+  for (const m of mores) for (const ev of m.events) {
+    const [a0, b0] = layout.spans.get(ev.id) ?? [ev.start, ev.start + ev.duration];
+    const a = Math.max(a0, colStart), b = Math.min(b0, colStart + 43200);
+    if (b <= a) continue;
+    folded.push({ ev, top: ((a - colStart) / 3600) * hourHeight + LINE_OFFSET, height: ((b - a) / 3600) * hourHeight, l: m.l, r: m.r,
+      labels: miniLabels(ev, startLabel(ev, Math.max(ev.start, colStart), showTimes, true)) });}
+  const tags = new Map<string, { x: number; y: number; w: number; label: string; ev: CalEvent }>();
+  const tagBoxes: (typeof taken)[number][] = [];
+  const bottomY = 12 * hourHeight + LINE_OFFSET;
+  const blockers = (x: number, y: number, w: number) =>
+    [...taken, ...tagBoxes].filter((o) => o.t < y + TAG_H + 1 && o.b > y - 1 && o.l < x + w + 2 && o.r > x - 2);
+  const toTag = [...geo.filter((g) => tagged.has(g.ev.id)), ...folded].sort((x, y) => x.top + x.height / 2 - (y.top + y.height / 2));
+  for (const g of toTag) {
+    const label = g.labels.find((x) => tagWidth(x) <= areaW) ?? g.labels[g.labels.length - 1];
+    const w = Math.min(tagWidth(label), areaW);
+    const y0 = clamp(g.top + g.height / 2 - TAG_H / 2, 0, bottomY - TAG_H);
+    let best: { x: number; y: number; cost: number } | null = null;
+    for (const [x, sidePenalty] of [[clamp(g.r - w, 0, areaW - w), 0], [clamp(g.l, 0, areaW - w), 0.5]] as const) {
+      for (const dir of [1, -1]) {
+        let y = y0;
+        for (let k = 0; k < 60; k++) {
+          const hit = blockers(x, y, w);
+          if (!hit.length) break;
+          y = dir > 0 ? Math.max(...hit.map((o) => o.b)) + 1 : Math.min(...hit.map((o) => o.t)) - TAG_H - 1;}
+        if (y < 0 || y > bottomY - TAG_H || blockers(x, y, w).length) continue;
+        const cost = Math.abs(y - y0) + sidePenalty;
+        if (!best || cost < best.cost) best = { x, y, cost };}}
+    const { x, y } = best ?? { x: clamp(g.r - w, 0, areaW - w), y: y0 }; // nowhere free at all: it sits on its bar regardless
+    tags.set(g.ev.id, { x, y, w, label, ev: g.ev });
+    tagBoxes.push({ t: y, b: y + TAG_H, l: x, r: x + w });
+    picked.set(g.ev.id, label);}
   const texts: React.ReactNode[] = []; // event text, drawn above the current-time line
   const blocks: React.ReactNode[] = [];
   for (const { ev, ce, segStart, segEnd, height, top, moving, lane, lanes, span } of geo) {
@@ -1299,15 +1289,15 @@ const Column = memo(function Column({ column, areaW, onMore, selKey, hourHeight,
     const dragged = drag?.id === ev.id;
     const shift = moving ? dragShift : null;
     const tag = tags.get(ev.id);
-    texts.push(<EventLabel key={ev.id} ev={ev} selKey={selKey} top={top} height={height} left={left} width={width} segStart={segStart} segEnd={segEnd} ce={ce} showTimes={showTimes} showInfo={showInfo} raised={dragged} shift={shift} narrowMode={narrow.get(ev.id)?.mode} narrowW={narrow.get(ev.id)?.w} text={picked.get(ev.id)} tagX={tag?.x} tagY={tag?.y} tagW={tag?.w} />);
+    texts.push(<EventLabel key={ev.id} ev={ev} selKey={selKey} top={top} height={height} left={left} width={width} segStart={segStart} segEnd={segEnd} ce={ce} showTimes={showTimes} showInfo={showInfo} raised={dragged} shift={shift} narrowMode={tag ? undefined : narrow.get(ev.id)?.mode} narrowW={narrow.get(ev.id)?.w} text={picked.get(ev.id)} tagX={tag?.x} tagY={tag?.y} tagW={tag?.w} />);
     blocks.push(<EventBlock key={ev.id} ev={ev} column={column} top={top} height={height} left={left} width={width} dragging={dragged} shift={shift}
       grip={ev.start + ev.duration === segEnd || (dragged && drag!.col === column)}
       onEdit={onEdit} onHold={onHold} onDragBegin={onDragBegin} onDragMove={onDragMove} onDragEnd={onDragEnd} onTouchEnd={onTouchEnd} />);}
   return (<View style={[styles.timeColumn, drag?.col === column && { zIndex: 30 }]}>
       <HourRows column={column} hourHeight={hourHeight} onAdd={onAdd} />
       <View style={styles.eventLayer} pointerEvents={placing ? "none" : "box-none"}>{blocks}
-        {[...groups].map(([id, evs]) => { const tg = tags.get(id)!;
-          return <Pressable key={`group-${id}`} onPress={() => onMore(evs)} accessibilityLabel={`${evs.length} events. Show them.`} style={{ position: "absolute", left: tg.x, top: tg.y, width: tg.w, height: TAG_H }} />;})}
+        {[...tags].map(([id, tg]) => ( // a tag can be tapped like its event (it may sit a little off its bar)
+          <Pressable key={`tag-${id}`} onPress={() => onEdit(tg.ev)} accessibilityLabel={`Open ${tg.ev.title}`} style={{ position: "absolute", left: tg.x, top: tg.y - 3, width: tg.w, height: TAG_H + 6, zIndex: 8 }} />))}
         {mores.map((m) => (<Pressable key={`more-${m.start}`} onPress={() => onMore(m.events)} accessibilityLabel={`${m.events.length} more events. Show them.`}
             style={[styles.moreBlock, { top: m.top, height: m.height, left: m.l, width: m.r - m.l }]}>
             <Text style={[styles.moreText, m.height < MINI && { fontSize: 8, lineHeight: 9 }]} numberOfLines={1}>+{m.events.length}</Text>
@@ -1318,7 +1308,11 @@ const Column = memo(function Column({ column, areaW, onMore, selKey, hourHeight,
           <View style={styles.currentTimeRule} />
           {now.exact < 0 && (<View style={[styles.currentTimeLabel, now.below ? { top: 4 } : { bottom: 4 }]}>
               <FitText style={styles.currentTimeText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{now.label}</FitText></View>)}</View>)}
-      <View style={[styles.eventLayer, { zIndex: 7 }]} pointerEvents="none">{texts}</View>
+      <View style={[styles.eventLayer, { zIndex: 7 }]} pointerEvents="none">{texts}
+        {folded.map(({ ev }) => { const tg = tags.get(ev.id)!; // tags for the events inside "+N" blocks
+          return (<View key={`folded-${ev.id}`} style={[styles.eventGhost, styles.sliverGhost, { top: tg.y, height: TAG_H, left: tg.x, width: tg.w }]}>
+              <View style={[styles.sliverTag, { backgroundColor: ev.color }, edgeOn(ev.color, PANEL)]}>
+                <Text style={[styles.miniText, { color: inkOn(ev.color) }]} numberOfLines={1}>{tg.label}</Text></View></View>);})}</View>
       <HourLabels column={column} hourHeight={hourHeight} exact={now?.column === column ? now.exact : -1} /></View>);});
 type SheetProps = {
   draft: Draft; isSeries: boolean; customColors: string[];
