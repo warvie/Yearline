@@ -20,7 +20,7 @@ const head = `
     <link rel="manifest" href="${base}/manifest.webmanifest" />
     <style>
       html, body { background: #000; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
-      input, textarea { -webkit-user-select: text; user-select: text; }
+      input, textarea { -webkit-user-select: text; user-select: text; min-width: 0; }
       /* Fill the whole screen. --app-h is the real screen height (set below) in the Home Screen app, where iOS reports less. */
       html, body { height: var(--app-h, 100%) !important; overflow: hidden; }
       body { position: fixed; top: 0; left: 0; right: 0; }
