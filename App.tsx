@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, ScrollView, Keyboard, Pressable, StyleSheet, StatusBar,
   Modal, TextInput, Platform, Alert as NativeAlert, AppState, Switch, useWindowDimensions, Image, Linking, PanResponder, PixelRatio, Animated, Easing,
@@ -638,7 +638,7 @@ function Tabs<T extends string>({ value, tabs, onPick, tight }: { value: T; tabs
   return (<View style={[styles.tabs, tight && { gap: 6 }]}>
       {tabs.map(([id, label, v]) => (<Pressable key={id} onPress={() => onPick(id)} style={[styles.tab, tight && { paddingHorizontal: 8 }, value === id && styles.chipOn]}>
           <Text style={styles.tabLabel}>{label}</Text>
-          <Text style={styles.tabValue} numberOfLines={1} adjustsFontSizeToFit>{v}</Text></Pressable>))}</View>);}
+          <FitText style={styles.tabValue} numberOfLines={1} adjustsFontSizeToFit>{v}</FitText></Pressable>))}</View>);}
 // A row of chips where exactly one option is active: [value, label, accessibility label].
 function Choices<T>({ value, options, onPick, dim, wrap }: { value: T; options: [T, string, string][]; onPick: (v: T) => void; dim?: boolean; wrap?: boolean }) {
   return <View style={[styles.chips, wrap && styles.chipsWrap]}>{options.map(([v, label, a11y]) => <Chip key={label} label={label} a11y={a11y} active={value === v} dim={dim} onPress={() => onPick(v)} />)}</View>;}
@@ -946,6 +946,44 @@ const ScrollLock = React.createContext<(locked: boolean) => void>(() => {});
 function LockScroll({ scrollEnabled = true, ...props }: React.ComponentProps<typeof ScrollView>) {
   const [locked, setLocked] = useState(false);
   return <ScrollLock.Provider value={setLocked}><ScrollView {...props} scrollEnabled={scrollEnabled && !locked} /></ScrollLock.Provider>;}
+// Text marked adjustsFontSizeToFit shrinks until it fits on the phone. The web can't do that by itself (it cuts the text off
+// with "…" instead), so there the font is stepped down after each layout until the text fits.
+function FitText(props: React.ComponentProps<typeof Text>) {
+  return IS_WEB && props.adjustsFontSizeToFit ? <WebFitText {...props} /> : <Text {...props} />;}
+function WebFitText({ minimumFontScale = 0.5, adjustsFontSizeToFit, ...rest }: React.ComponentProps<typeof Text>) {
+  const ref = useRef<any>(null);
+  const fit = useCallback(() => {
+    const el = ref.current as HTMLElement | null;
+    if (!el || !el.style) return;
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
+    if (!base) return;
+    for (let scale = 1; el.scrollWidth > el.clientWidth + 0.5 && scale > minimumFontScale; ) {
+      scale = Math.max(minimumFontScale, scale - 0.04);
+      el.style.fontSize = `${(base * scale).toFixed(2)}px`;}
+  }, [minimumFontScale]);
+  useLayoutEffect(fit);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let w = -1;
+    const ro = new ResizeObserver(() => { if (el.clientWidth !== w) { w = el.clientWidth; fit(); } });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fit]);
+  return <Text ref={ref} {...rest} />;}
+// Pages that keep their scroll position when the app redraws (picking a theme or a setting redraws everything).
+const keptScroll: Record<string, number> = {};
+function useKeptScroll(name: string) {
+  const ref = useRef<ScrollView>(null);
+  useEffect(() => {
+    const y = keptScroll[name];
+    if (!y) return;
+    ref.current?.scrollTo({ y, animated: false });
+    const t = setTimeout(() => ref.current?.scrollTo({ y, animated: false }), 0); // again once the page has its full height
+    return () => clearTimeout(t);
+  }, []);
+  return { ref, scrollEventThrottle: 16, onScroll: (e: any) => { keptScroll[name] = e.nativeEvent.contentOffset.y; } };}
 // A drawn bell (not an emoji) that takes the text's color.
 const Bell = ({ size, color }: { size: number; color: string }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24">
@@ -1004,8 +1042,8 @@ const EventLabel = memo(function EventLabel({ ev, selKey, top, height, left, wid
             {!!endText && <Text style={[styles.eventTime, { color, bottom: 3 }]} numberOfLines={1}>{endText}</Text>}
           </>)}
         <View style={styles.eventBody}>
-          <Text style={[styles.eventText, styles.eventTitle, { color }, tight && styles.tightTitle]} numberOfLines={tight || detailLines ? 1 : 2} adjustsFontSizeToFit={tight} minimumFontScale={0.6}>
-            {ev.important ? `${SHAPE_GLYPHS[ev.shape ?? "star"]} ` : ""}{ev.title}{ev.repeat !== "none" ? " ↻" : ""}{detailLines || (tight && detail.length) ? "" : progress(ev, selKey)}</Text>
+          <FitText style={[styles.eventText, styles.eventTitle, { color }, tight && styles.tightTitle]} numberOfLines={tight || detailLines ? 1 : 2} adjustsFontSizeToFit={tight} minimumFontScale={0.6}>
+            {ev.important ? `${SHAPE_GLYPHS[ev.shape ?? "star"]} ` : ""}{ev.title}{ev.repeat !== "none" ? " ↻" : ""}{detailLines || (tight && detail.length) ? "" : progress(ev, selKey)}</FitText>
           {tight && detail.length > 0 && <Detail text={detail.join(" · ")} color={color} style={styles.tightText} size={8} />}
           {detailLines === 2
             ? detail.map((d) => <Detail key={d} text={d} color={color} style={styles.eventDetail} size={10} />)
@@ -1206,7 +1244,7 @@ const Column = memo(function Column({ column, areaW, onMore, selKey, hourHeight,
           <View style={styles.currentTimeDot} />
           <View style={styles.currentTimeRule} />
           {now.exact < 0 && (<View style={[styles.currentTimeLabel, now.below ? { top: 4 } : { bottom: 4 }]}>
-              <Text style={styles.currentTimeText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{now.label}</Text></View>)}</View>)}
+              <FitText style={styles.currentTimeText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{now.label}</FitText></View>)}</View>)}
       <View style={[styles.eventLayer, { zIndex: 7 }]} pointerEvents="none">{texts}</View>
       <HourLabels column={column} hourHeight={hourHeight} exact={now?.column === column ? now.exact : -1} /></View>);});
 type SheetProps = {
@@ -1578,7 +1616,8 @@ function ThemesPage({ current, customs, onPick, onSave, onDelete }: {
   current: string; customs: Theme[]; onPick: (id: string) => void; onSave: (t: Theme) => void; onDelete: (id: string) => void;
 }) {
   const [editing, setEditing] = useState<Theme | "new" | null>(null);
-  return (<ScrollView style={styles.page} contentContainerStyle={styles.pageBody}>
+  const kept = useKeptScroll("themes");
+  return (<ScrollView {...kept} style={styles.page} contentContainerStyle={styles.pageBody}>
       <PageHeader title="Themes" />
       {THEMES.map((t) => <ThemeCard key={t.id} t={t} selected={current === t.id} onPress={() => onPick(t.id)} />)}
       {customs.length > 0 && <Text style={styles.sectionLabel}>YOUR THEMES</Text>}
@@ -1615,7 +1654,7 @@ function ThemeEditor({ initial, onSave, onDelete, onClose }: { initial: Theme | 
           <View style={styles.fieldRow}>
             {SLOTS.map(([k, label]) => (<Pressable key={k} onPress={() => { setSlot(k); setHsv(hexToHsv(c[k])); }} accessibilityLabel={label} style={[styles.slotChip, slot === k && styles.chipOn]}>
                 <View style={[styles.slotDot, { backgroundColor: c[k] }]} />
-                <Text style={styles.slotText} numberOfLines={1} adjustsFontSizeToFit>{label}</Text></Pressable>))}</View>
+                <FitText style={styles.slotText} numberOfLines={1} adjustsFontSizeToFit>{label}</FitText></Pressable>))}</View>
           <View style={styles.pickerRow}>
             <SvSquare hue={h} sat={sat} val={val} onChange={(x, y) => setColor(hsvToHex(h, x, y), [h, x, y])} />
             <HueBar hue={h} onChange={(nh) => setColor(hsvToHex(nh, sat, val), [nh, sat, val])} /></View>
@@ -1663,7 +1702,8 @@ function SettingsPage({ prefs, onChange, onWipe }: {
       <Text style={[styles.settingLabel, danger && { color: DANGER }]}>{label}</Text></Pressable>);
   const toggle = (key: "showTimes" | "showInfo" | "defaultReminder" | "showNow" | "showDots" | "showWeekday" | "reminders", label: string, hint: string) =>
     <SettingRow label={label} hint={hint} value={prefs[key]} onChange={(v) => onChange({ [key]: v })} />;
-  return (<ScrollView style={styles.page} contentContainerStyle={styles.pageBody}>
+  const kept = useKeptScroll("settings");
+  return (<ScrollView {...kept} style={styles.page} contentContainerStyle={styles.pageBody}>
       <PageHeader title="Settings" />
       <Text style={styles.sectionLabel}>DISPLAY</Text>
       <SettingChoice label="Time format" hint="Hour labels, event times and the time pickers" value={prefs.clock24} options={[[false, "12-hour"], [true, "24-hour"]]} onPick={(clock24) => onChange({ clock24 })} />
@@ -2074,7 +2114,7 @@ function Calendar({ prefs }: { prefs: Prefs }) {
           <View style={styles.headerLeft}>
             <HoldPressable hitSlop={10} onPress={goToday} onLongPress={confirmClear} delayLongPress={600} accessibilityLabel="Go to today. Long press to clear all events." style={styles.todayButton}>
               <Text style={[styles.todayButtonText, selKey === todayKey && styles.todayTitle]}>Today</Text></HoldPressable>
-            <Text style={[titleStyle, styles.weekdayTitle]} numberOfLines={1} adjustsFontSizeToFit>{DAYS[selected.getDay()]},</Text></View>
+            <FitText style={[titleStyle, styles.weekdayTitle]} numberOfLines={1} adjustsFontSizeToFit>{DAYS[selected.getDay()]},</FitText></View>
           <View style={styles.titleRow}>
             <Pressable hitSlop={10} onPress={() => changeMonth(-1)} accessibilityLabel="Previous month" style={styles.arrowButton}>
               <Text style={styles.arrowText}>‹</Text></Pressable>
@@ -2084,8 +2124,8 @@ function Calendar({ prefs }: { prefs: Prefs }) {
               <Text style={styles.arrowText}>›</Text></Pressable></View>
           <View style={styles.headerRight}>
             <Text style={titleStyle} numberOfLines={1}>{ordinal(selected.getDate())}</Text>
-            <Text style={titleStyle} numberOfLines={1} adjustsFontSizeToFit>
-              {pad(selected.getDate())}/{pad(month + 1)}/{year}</Text></View></View>
+            <FitText style={titleStyle} numberOfLines={1} adjustsFontSizeToFit>
+              {pad(selected.getDate())}/{pad(month + 1)}/{year}</FitText></View></View>
         {/* TIMELINE */}
         <View style={[styles.timelineContainer, { paddingBottom: bottomPad }]} onLayout={(e) => setTimelineHeight(e.nativeEvent.layout.height)}>
           {placing && (<View style={styles.placeBar} pointerEvents="box-none">
