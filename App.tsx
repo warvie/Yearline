@@ -630,7 +630,7 @@ function EveryChip({ active, dim, interval, onPress, onFocus, onChangeText }: {
   const word = [styles.chipText, active && styles.chipTextOn];
   return (<Pressable onPress={onPress} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel="Repeat every few days" style={[styles.chip, styles.everyChip, active && styles.chipOn, dim && styles.dimmed]}>
       <Text style={word}>Every</Text>
-      <TextInput value={interval ? String(interval) : ""} onFocus={onFocus} onChangeText={onChangeText} keyboardType="number-pad" returnKeyType="done" maxLength={3} selectTextOnFocus
+      <TextInput value={interval ? String(interval) : ""} onFocus={onFocus} onChangeText={onChangeText} keyboardType="number-pad" returnKeyType="done" maxLength={9} selectTextOnFocus
         placeholder="2" placeholderTextColor={MUTED} accessibilityLabel="Number of days between repeats" style={[styles.everyInput, active && styles.everyInputOn]} />
       <Text style={word}>{interval === 1 ? "day" : "days"}</Text></Pressable>);}
 // A row of tabs, each with a label and its current value: [id, label, value]. `tight` fits five across.
@@ -1285,7 +1285,7 @@ function Sheet({ draft, isSeries, customColors, onAddColor, onDeleteColor, onCha
     onChange({ repeat: "interval", interval: (draft.interval ?? 0) >= 2 ? draft.interval : 2 });};
   // Typing (or tapping into) the box inside the chip also switches the repeat to it.
   const setInterval_ = (t: string) => {
-    const n = parseInt(t.replace(/[^0-9]/g, "").slice(0, 3), 10);
+    const n = parseInt(t.replace(/[^0-9]/g, "").slice(0, 9), 10);
     onChange({ repeat: "interval", interval: Number.isFinite(n) ? n : 0 });}; // 0 while the box is empty
   const focusInterval = () => { if (draft.repeat !== "interval") onChange({ repeat: "interval", interval: (draft.interval ?? 0) >= 1 ? draft.interval : 2 }); };
   const repeating = draft.repeat !== "none";
@@ -2294,7 +2294,7 @@ return StyleSheet.create({
   chips: { flexDirection: "row", gap: 8 },
   chipsWrap: { flexWrap: "wrap" },
   everyChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 4 },
-  everyInput: { width: 48, minWidth: 0, backgroundColor: PANEL, color: TEXT, fontSize: 14, fontWeight: "700", textAlign: "center", borderRadius: 8, paddingHorizontal: 6, paddingVertical: 4 },
+  everyInput: { width: 46, minWidth: 0, backgroundColor: PANEL, color: TEXT, fontSize: 14, fontWeight: "700", textAlign: "center", borderRadius: 8, paddingHorizontal: 6, paddingVertical: 4 },
   everyInputOn: { color: ORANGE },
   chip: { ...chipBase, minHeight: 40, justifyContent: "center", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 },
   chipOn: { borderColor: ORANGE },
