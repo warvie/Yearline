@@ -47,7 +47,8 @@ const miniLabels = (ev: CalEvent, start: string) => {
   const mark = ev.important ? `${SHAPE_GLYPHS[ev.shape ?? "star"]} ` : "", rep = ev.repeat !== "none" ? " ↻" : "";
   return [...new Set([`${start ? `${start} ` : ""}${mark}${ev.title}${rep}`, `${mark}${ev.title}${rep}`, ev.title])];};
 // Roughly how wide text draws (bold, average letter about 0.6 of the font size), so labels can be laid out before they're drawn.
-const textW = (text: string, size: number) => Math.ceil(text.length * size * 0.6);
+// The web's fonts run a little wider than the phone's, so they're measured wider there.
+const textW = (text: string, size: number) => Math.ceil(text.length * size * (Platform.OS === "web" ? 0.7 : 0.6));
 const tagWidth = (label: string) => textW(label, 8) + 10; // tag padding 5 + 5
 const wrapLines = (height: number) => Math.max(1, Math.floor((height - 4) / 9)); // lines of 8pt text a block of this height holds
 const LABEL_WIDTH = 30; // room for "12pm" in each hour row
