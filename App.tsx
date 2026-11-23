@@ -694,7 +694,11 @@ function Tabs<T extends string>({ value, tabs, onPick, tight }: { value: T; tabs
           <FitText style={styles.tabValue} numberOfLines={1} adjustsFontSizeToFit>{v}</FitText></Pressable>))}</View>);}
 // A row of chips where exactly one option is active: [value, label, accessibility label].
 function Choices<T>({ value, options, onPick, dim, wrap }: { value: T; options: [T, string, string][]; onPick: (v: T) => void; dim?: boolean; wrap?: boolean }) {
-  return <View style={[styles.chips, wrap && styles.chipsWrap]}>{options.map(([v, label, a11y]) => <Chip key={label} label={label} a11y={a11y} active={value === v} dim={dim} onPress={() => onPick(v)} />)}</View>;}
+  const chips = options.map(([v, label, a11y]) => <Chip key={label} label={label} a11y={a11y} active={value === v} dim={dim} onPress={() => onPick(v)} />);
+  if (wrap) return <View style={[styles.chips, styles.chipsWrap]}>{chips}</View>;
+  // A row too wide for the screen scrolls sideways instead of being cut off.
+  return (<ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.chipScroll} contentContainerStyle={styles.chips}>
+      {chips}</ScrollView>);}
 // Read at render time (not module load) so they follow the current theme. [background, text, weight, outline]
 const buttonLook = (kind: "save" | "cancel" | "delete") =>
   ({
@@ -2374,6 +2378,7 @@ return StyleSheet.create({
   wheelTextOn: { color: TEXT, fontWeight: "700" },
   chips: { flexDirection: "row", gap: 8 },
   chipsWrap: { flexWrap: "wrap" },
+  chipScroll: { flexGrow: 0 },
   everyChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 4 },
   everyInput: { width: 46, minWidth: 0, backgroundColor: PANEL, color: TEXT, fontSize: 14, fontWeight: "700", textAlign: "center", borderRadius: 8, paddingHorizontal: 6, paddingVertical: 4 },
   everyInputOn: { color: ORANGE },
