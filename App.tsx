@@ -815,25 +815,69 @@ async function pickSound() {
   }
   return { soundUri: uri, soundName: a.name, soundFile: file };
 }
+// Web: the photo picker. The browser's own file chooser, opened straight from the tap (iPhone requires that), giving the
+// picked files themselves.
+function pickWebFiles(accept: string, multiple: boolean): Promise<File[]> {
+  return new Promise((res) => {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = accept; input.multiple = multiple;
+    input.style.position = "fixed"; input.style.left = "-1000px"; input.style.opacity = "0";
+    document.body.appendChild(input); // iPhone only reports the choice for a chooser that's in the page
+    let done = false;
+    const finish = (files: File[]) => { if (done) return; done = true; input.remove(); res(files); };
+    input.addEventListener("change", () => finish(Array.from(input.files ?? [])));
+    input.addEventListener("cancel", () => finish([]));
+    input.click();});}
+const readAsDataUrl = (blob: Blob) => new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(blob); });
+// A picked photo, shrunk to at most `max` points on its long side as a JPEG. Works for iPhone photos (HEIC) too, since the
+// browser decodes them. If the photo can't be redrawn, the file itself is kept when it's small enough.
+async function photoToDataUrl(file: File, max = 1280): Promise<string | null> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new (window as any).Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    if (img.decode) await img.decode().catch(() => {});
+    const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
+    if (w0 && h0) {
+      const scale = Math.min(1, max / Math.max(w0, h0));
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(w0 * scale)); c.height = Math.max(1, Math.round(h0 * scale));
+      const g = c.getContext("2d");
+      if (g) {
+        g.drawImage(img, 0, 0, c.width, c.height);
+        const out = c.toDataURL("image/jpeg", 0.75);
+        if (out.startsWith("data:image/") && out.length > 500) return out;}}
+  } catch {} finally { URL.revokeObjectURL(url); }
+  return file.size <= 1_500_000 ? readAsDataUrl(file).catch(() => null) : null;}
+const isVideoFile = (f: File) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|3gp)$/i.test(f.name);
 async function pickMedia(): Promise<Media[]> {
+  if (IS_WEB) {
+    const files = await pickWebFiles("image/*,video/*", true);
+    const kept: Media[] = [];
+    let bigVideos = 0, failed = 0;
+    for (const f of files) {
+      if (isVideoFile(f)) {
+        const uri = f.size <= 1_500_000 ? await readAsDataUrl(f).catch(() => null) : null;
+        if (uri) kept.push({ id: newId(), kind: "video", uri }); else bigVideos++;
+      } else {
+        const uri = await photoToDataUrl(f);
+        if (uri) kept.push({ id: newId(), kind: "image", uri }); else failed++;}}
+    if (bigVideos) Alert.alert("Video too big", "Videos over 1.5 MB don't fit in the web app's storage. Add a YouTube link instead.");
+    else if (failed) Alert.alert("Couldn't add that photo", "Try a different photo, or take a screenshot of it and add that.");
+    return kept;}
   const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], allowsMultipleSelection: true, quality: 0.8 });
   if (r.canceled) return [];
-  if (IS_WEB) {
-    const kept: Media[] = [];
-    let skipped = 0;
-    for (const a of r.assets) {
-      const video = a.type === "video" || /^data:video|\.(mp4|mov|m4v|webm)$/i.test(a.uri);
-      const uri = video ? await fileToDataUrl(a.uri, 1_500_000).catch(() => null) : await shrinkImage(a.uri);
-      if (uri) kept.push({ id: newId(), kind: video ? "video" : "image", uri }); else skipped++;}
-    if (skipped) Alert.alert("Some files weren't added", "Videos over 1.5 MB don't fit in the web app's storage. Add a YouTube link instead.");
-    return kept;}
   return Promise.all(r.assets.map(async (a) => ({ id: newId(), kind: a.type === "video" ? "video" : "image", uri: await keepFile(a.uri) }) as Media));}
+// Web: pictures are drawn as plain web images (react-native-web's Image can come up blank for photos on iPhone).
+const webFill = (fit: "cover" | "contain") => ({ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", objectFit: fit, pointerEvents: "none", display: "block" });
 function MediaThumb({ m, onPress, onRemove }: { m: Media; onPress: () => void; onRemove?: () => void }) {
   const yt = m.kind === "youtube" ? youtubeId(m.uri) : undefined;
   const src = m.kind === "image" ? m.uri : yt ? `https://img.youtube.com/vi/${yt}/hqdefault.jpg` : undefined;
   return (<View style={styles.thumb}>
       <Pressable onPress={onPress} accessibilityLabel={`Open ${m.kind}`} style={styles.thumbFill}>
-        {src && <Image source={{ uri: src }} style={StyleSheet.absoluteFill} />}
+        {IS_WEB
+          ? (src ? React.createElement("img", { src, alt: "", draggable: false, style: webFill("cover") })
+            : m.kind === "video" ? React.createElement("video", { src: `${m.uri}#t=0.1`, muted: true, playsInline: true, preload: "metadata", style: webFill("cover") }) : null)
+          : src && <Image source={{ uri: src }} style={StyleSheet.absoluteFill} />}
         {m.kind !== "image" && <Text style={styles.thumbPlay}>▶</Text>}</Pressable>
       {onRemove && <Pressable onPress={onRemove} accessibilityLabel="Remove" style={styles.thumbX}><Text style={styles.thumbXText}>✕</Text></Pressable>}</View>);}
 const MediaRow = ({ media, onOpen, onRemove }: { media?: Media[]; onOpen: (m: Media) => void; onRemove?: (id: string) => void }) =>
@@ -846,7 +890,9 @@ function MediaViewer({ media, onClose }: { media: Media | null; onClose: () => v
   const { top } = useSafeAreaInsets();
   return (<Modal visible={!!media} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.viewer}>
-        {media?.kind === "image" && <Image source={{ uri: media.uri }} style={styles.viewerMedia} resizeMode="contain" />}
+        {media?.kind === "image" && (IS_WEB
+          ? <Pressable onPress={onClose} accessibilityLabel="Close" style={styles.viewerMedia}>{React.createElement("img", { src: media.uri, alt: "", style: webFill("contain") })}</Pressable>
+          : <Image source={{ uri: media.uri }} style={styles.viewerMedia} resizeMode="contain" />)}
         {media?.kind === "video" && <VideoBox uri={media.uri} />}
         <Pressable onPress={onClose} accessibilityLabel="Close" style={[styles.viewerClose, { top: top + 8 }]}><Text style={styles.thumbXText}>✕</Text></Pressable></View></Modal>);}
 // Photos and videos open in the viewer; YouTube links open in YouTube or the browser.
