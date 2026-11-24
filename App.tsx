@@ -833,8 +833,10 @@ const readAsDataUrl = (blob: Blob) => new Promise<string>((res, rej) => { const 
 // browser decodes them. If the photo can't be redrawn, the file itself is kept when it's small enough.
 async function photoToDataUrl(file: File, max = 1280): Promise<string | null> {
   const url = URL.createObjectURL(file);
+  let shown = false; // the browser could display it: only then is keeping the file itself any use
   try {
     const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new (window as any).Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    shown = true;
     if (img.decode) await img.decode().catch(() => {});
     const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
     if (w0 && h0) {
@@ -847,7 +849,7 @@ async function photoToDataUrl(file: File, max = 1280): Promise<string | null> {
         const out = c.toDataURL("image/jpeg", 0.75);
         if (out.startsWith("data:image/") && out.length > 500) return out;}}
   } catch {} finally { URL.revokeObjectURL(url); }
-  return file.size <= 1_500_000 ? readAsDataUrl(file).catch(() => null) : null;}
+  return shown && file.size <= 1_500_000 ? readAsDataUrl(file).catch(() => null) : null;}
 const isVideoFile = (f: File) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|3gp)$/i.test(f.name);
 async function pickMedia(): Promise<Media[]> {
   if (IS_WEB) {
