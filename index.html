@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    
+    <title>Yearline</title>
+    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <style id="expo-reset">
+      /* These styles make the body full-height */
+      html,
+      body {
+        height: 100%;
+      }
+      /* These styles disable body scrolling if you are using <ScrollView> */
+      body {
+        overflow: hidden;
+      }
+      /* These styles make the root element full-height */
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+    </style>
+  <meta name="theme-color" content="#000000">
+<link rel="icon" href="/Yearline/favicon.ico"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Yearline" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="apple-touch-icon" href="/Yearline/icon-180.png" />
+    <link rel="manifest" href="/Yearline/manifest.webmanifest" />
+    <style>
+      html, body { background: #000; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+      input, textarea { -webkit-user-select: text; user-select: text; min-width: 0; }
+      input { text-overflow: ellipsis; } /* a number too long for its box ends in "…" */
+      /* Fill the whole screen. --app-h is the real screen height (set below) in the Home Screen app, where iOS reports less. */
+      html, body { height: var(--app-h, 100%) !important; overflow: hidden; }
+      body { position: fixed; top: 0; left: 0; right: 0; }
+      #root { height: var(--app-h, 100%) !important; }
+    </style>
+    <script>
+      // Opened from the Home Screen with the status bar drawn over the page, iOS gives the page a height short by about the
+      // status bar, which leaves a gap at the bottom. The app covers the whole screen there, so the screen's own height is right.
+      (function () {
+        var standalone = navigator.standalone || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+        if (!standalone) return;
+        function fit() {
+          var portrait = !window.matchMedia || matchMedia("(orientation: portrait)").matches;
+          var full = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width);
+          document.documentElement.style.setProperty("--app-h", Math.max(full, window.innerHeight) + "px");
+        }
+        fit();
+        addEventListener("resize", fit);
+        addEventListener("orientationchange", function () { setTimeout(fit, 300); });
+      })();
+    </script>
+  </head>
+
+  <body>
+    <!-- Use static rendering with Expo Router to support running without JavaScript. -->
+    <noscript> You need to enable JavaScript to run this app. </noscript>
+    <!-- The root element for your Expo app. -->
+    <div id="root"></div>
+  <script src="/Yearline/_expo/static/js/web/index-95ae847375b3d7df9e82309311507d48.js" defer></script>
+
+    <script>
+      if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("/Yearline/sw.js", { scope: "/Yearline/" }).catch(() => {}));
+      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    </script>
+  </body>
+</html>
